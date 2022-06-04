@@ -75,51 +75,73 @@ the main use for this is for things like OOP classes:
 
 ]]
 
+local Connection = {}
+Connection.__index = Connection
+
+function Connection.new(callback)
+	return setmetatable({
+		_Callback = callback
+	}, Connection)
+end
+
+function Connection:Disconnect()
+	self._Callback = nil
+	setmetatable(self,nil)
+end
+
+
 local Signal = {}
 Signal.__index = Signal
 
-local Connection = require(script.Connection)
-
 function Signal.new()
 	return setmetatable({
-		_Connections = {},
-		_Yielding = {},
+		_Threads = {},
 		Firing = false
 	}, Signal)
 end
 
 function Signal:Fire(...)
-	for i,Connection in ipairs(self._Connections) do
-		if Connection._Callback == nil then table.remove(self._Connections,i) else
-			spawn(function(...)
-				Connection:Fire(...)
-			end)(...)
+	for threadOrConnection,_Type in pairs(self._Threads) do
+		if _Type == "Connection" then
+			if threadOrConnection._Callback == nil then self._Threads[threadOrConnection] = nil else
+				task.spawn(threadOrConnection._Callback,...)
+			end
+		elseif _Type == "ConnectOnce" then
+			if threadOrConnection._Callback ~= nil then
+				task.spawn(threadOrConnection._Callback,...)
+				threadOrConnection:Disconnect()
+			end
+		elseif _Type == "Wait" then
+			self._Threads[threadOrConnection] = nil
+			task.spawn(threadOrConnection, ...)
 		end
-	end
-	for i,thread in pairs(self._Yielding) do
-		table.remove(self._Yielding, i)
-		task.spawn(thread, ...)
 	end
 end
 
-function Signal:Wait(duration)
+function Signal:Wait(duration : number?)
 	local Running = coroutine.running()
-	table.insert(self._Yielding, Running)
+	self._Threads[Running] = "Wait"
 	if duration then
-		task.delay(duration, function()
-			local index = table.find(self._Yielding, Running)
-			if index then
-				table.remove(self._Yielding, index)
-				task.spawn(Running)
+		task.delay(duration, function(thread)
+			local stillYielding = self._Threads[thread]
+			if stillYielding then
+				self._Threads[thread] = nil
+				task.spawn(thread)
 			end
-		end)
+		end, Running)
 	end
 	return coroutine.yield()
 end
 
-function Signal:Connect(callback)
+function Signal:Connect(callback: () -> ())
 	local connection = Connection.new(callback)
-	table.insert(self._Connections, connection)
+	self._Threads[connection] = "Connection"
+	return connection
+end
+
+function Signal:ConnectOnce(callback: () -> ())
+	local connection = Connection.new(callback)
+	self._Threads[connection] = "ConnectOnce"
 	return connection
 end
 
@@ -134,3 +156,5 @@ end
 
 
 return Signal
+
+
